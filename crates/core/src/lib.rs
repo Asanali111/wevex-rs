@@ -3,6 +3,7 @@
 pub mod error;
 pub mod lock;
 pub mod paths;
+pub mod storage;
 
 pub use error::{Error, Result};
 
