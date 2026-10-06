@@ -9,3 +9,11 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+rusqlite.workspace = true
+fs4.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
