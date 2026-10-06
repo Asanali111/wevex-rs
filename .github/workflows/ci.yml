@@ -1,0 +1,77 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14          # Apple Silicon (primary target)
+            target: aarch64-apple-darwin
+          - os: macos-14          # Intel Mac, cross-compiled
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --workspace --release --target ${{ matrix.target }}
+      - name: Test
+        # x86_64 binaries run under Rosetta on the arm64 runner.
+        run: cargo test --workspace --target ${{ matrix.target }}
+      - name: Smoke
+        shell: bash
+        run: |
+          ./target/${{ matrix.target }}/release/wevex --version
+          ./target/${{ matrix.target }}/release/wevexd --version
+
+  universal:
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin, x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - run: |
+          for t in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --target $t -p wevex -p wevexd
+          done
+          mkdir -p dist
+          for b in wevex wevexd; do
+            lipo -create -output dist/$b \
+              target/aarch64-apple-darwin/release/$b \
+              target/x86_64-apple-darwin/release/$b
+            lipo -info dist/$b
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wevex-macos-universal
+          path: dist/
