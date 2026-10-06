@@ -1,0 +1,11 @@
+[package]
+name = "wevex-service"
+description = "Background service install: launchd on macOS, Scheduled Task on Windows."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]

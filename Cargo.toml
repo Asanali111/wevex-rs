@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = ["crates/*", "bins/*"]
+
+[workspace.package]
+version = "0.3.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/Asanali111/wevex-rs"
+authors = ["Asanali Omar"]
+
+[workspace.dependencies]
+wevex-core = { path = "crates/core" }
+wevex-embed = { path = "crates/embed" }
+wevex-mcp = { path = "crates/mcp" }
+wevex-watchers = { path = "crates/watchers" }
+wevex-service = { path = "crates/service" }
+clap = { version = "4", features = ["derive"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
