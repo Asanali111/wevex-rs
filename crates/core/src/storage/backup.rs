@@ -26,7 +26,9 @@ pub fn snapshot(conn: &Connection, dir: &Path, label: &str) -> Result<PathBuf> {
     Ok(path)
 }
 
-/// Keep the `keep` newest snapshots in `dir`, delete the rest.
+/// Keep the `keep` newest snapshots in `dir`, delete the rest. A snapshot
+/// that cannot be deleted (on Windows, one another process has open) is
+/// left for the next rotation rather than failing daemon startup.
 pub fn rotate(dir: &Path, keep: usize) -> Result<Vec<PathBuf>> {
     let mut snaps: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(dir)?
         .filter_map(|e| e.ok())
@@ -36,8 +38,9 @@ pub fn rotate(dir: &Path, keep: usize) -> Result<Vec<PathBuf>> {
     snaps.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
     let mut removed = Vec::new();
     for (_, path) in snaps.into_iter().skip(keep) {
-        std::fs::remove_file(&path)?;
-        removed.push(path);
+        if std::fs::remove_file(&path).is_ok() {
+            removed.push(path);
+        }
     }
     Ok(removed)
 }
@@ -67,6 +70,7 @@ mod tests {
         let x: i64 = copy.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
         assert_eq!(x, 42);
         assert!(integrity_check(&copy).unwrap().is_empty());
+        drop(copy); // Windows cannot delete a file that is still open.
 
         std::fs::write(dir.path().join("wevex.db.bak-python"), b"untouched").unwrap();
         for i in 0..3 {
