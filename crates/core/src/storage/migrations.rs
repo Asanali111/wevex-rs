@@ -7,7 +7,7 @@
 
 use rusqlite::Connection;
 
-use crate::{Error, Result};
+use crate::{Error, Result, value};
 
 pub struct Migration {
     pub version: i64,
@@ -125,7 +125,47 @@ fn repair_legacy_columns(conn: &Connection) -> Result<Vec<String>> {
         conn.execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {ddl}"))?;
         added.push(format!("{table}.{column}"));
     }
+    if added.iter().any(|c| c == "fragments.value") {
+        backfill_values(conn)?;
+    }
     Ok(added)
+}
+
+/// Give pre-existing fragments a real initial value instead of the column
+/// default, as v0.2.2 did when it added the column. The `updated_at`
+/// trigger is dropped first so the backfill does not stamp every row as
+/// just-updated; the baseline that runs next recreates it.
+fn backfill_values(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DROP TRIGGER IF EXISTS fragments_updated_at")?;
+    let rows: Vec<(String, String, String, String, Option<String>, String)> = {
+        let mut stmt = conn.prepare(
+            "SELECT id, type, content, extraction_method, created_by_tool, metadata FROM fragments",
+        )?;
+        stmt.query_map([], |r| {
+            Ok((
+                r.get(0)?,
+                r.get(1)?,
+                r.get(2)?,
+                r.get(3)?,
+                r.get(4)?,
+                r.get(5)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?
+    };
+    let mut update = conn.prepare("UPDATE fragments SET value = ?1 WHERE id = ?2")?;
+    for (id, kind, content, method, tool, metadata) in rows {
+        let metadata = serde_json::from_str(&metadata).unwrap_or(serde_json::Value::Null);
+        let v = value::compute(&value::FragmentFacts {
+            kind: &kind,
+            content: &content,
+            extraction_method: &method,
+            created_by_tool: tool.as_deref(),
+            metadata: &metadata,
+        });
+        update.execute(rusqlite::params![v, id])?;
+    }
+    Ok(())
 }
 
 fn table_exists(conn: &Connection, table: &str) -> Result<bool> {
@@ -192,22 +232,44 @@ mod tests {
                content_embedding BLOB,
                created_at TEXT NOT NULL DEFAULT (datetime('now')),
                updated_at TEXT NOT NULL DEFAULT (datetime('now')));
-             INSERT INTO fragments (id, type, content, scope_id, owner_id)
-               VALUES ('f1', 'fact', 'kept', 's', 'o');",
+             CREATE TRIGGER fragments_updated_at AFTER UPDATE ON fragments BEGIN
+               UPDATE fragments SET updated_at = datetime('now') WHERE id = new.id;
+             END;
+             INSERT INTO fragments (id, type, content, scope_id, owner_id, updated_at)
+               VALUES ('f1', 'fact', 'kept', 's', 'o', '2026-01-01 00:00:00');",
         )
         .unwrap();
 
         let report = migrate(&mut conn).unwrap();
         assert_eq!(report.repaired_columns.len(), LEGACY_COLUMNS.len());
 
-        let (content, value): (String, f64) = conn
+        let (content, value, updated_at): (String, f64, String) = conn
             .query_row(
-                "SELECT content, value FROM fragments WHERE id = 'f1'",
+                "SELECT content, value, updated_at FROM fragments WHERE id = 'f1'",
                 [],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .unwrap();
-        assert_eq!((content.as_str(), value), ("kept", 0.5));
+        assert_eq!(content, "kept");
+        // Computed like v0.2.2 (explicit, no tool, short content), not the 0.5 default.
+        assert!((value - 0.95).abs() < 1e-9);
+        // The backfill must not look like an edit.
+        assert_eq!(updated_at, "2026-01-01 00:00:00");
+
+        // ...and the trigger is back afterwards.
+        conn.execute(
+            "UPDATE fragments SET content = 'edited' WHERE id = 'f1'",
+            [],
+        )
+        .unwrap();
+        let updated_at: String = conn
+            .query_row(
+                "SELECT updated_at FROM fragments WHERE id = 'f1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_ne!(updated_at, "2026-01-01 00:00:00");
     }
 
     #[test]

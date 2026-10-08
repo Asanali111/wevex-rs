@@ -4,6 +4,7 @@ pub mod error;
 pub mod lock;
 pub mod paths;
 pub mod storage;
+pub mod value;
 
 pub use error::{Error, Result};
 
