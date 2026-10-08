@@ -14,6 +14,9 @@ fs4.workspace = true
 thiserror.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+# Only the Embedder interface; the daemon brings the real model.
+wevex-embed = { workspace = true, default-features = false }
 
 [dev-dependencies]
 tempfile.workspace = true

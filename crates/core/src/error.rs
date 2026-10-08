@@ -33,6 +33,9 @@ pub enum Error {
     #[error("database failed its integrity check: {}", .0.join("; "))]
     Corrupt(Vec<String>),
 
+    #[error(transparent)]
+    Embed(#[from] wevex_embed::Error),
+
     #[error("could not determine the home directory")]
     NoHome,
 }

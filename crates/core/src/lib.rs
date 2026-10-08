@@ -1,5 +1,6 @@
 //! Storage, schema migrations, scopes, entities and hybrid recall.
 
+pub mod embedding;
 pub mod error;
 pub mod lock;
 pub mod paths;
