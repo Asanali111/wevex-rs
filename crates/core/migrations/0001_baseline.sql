@@ -1,0 +1,247 @@
+-- 0001 baseline: the schema of Wevex v0.2.2 (Python) as found in the wild.
+-- Every statement is IF NOT EXISTS so this applies cleanly to both a fresh
+-- file and an existing v0.2.2 database (which reports user_version = 0).
+-- Columns that v0.2.2 added later via ALTER TABLE are repaired separately
+-- in migrations.rs, because CREATE TABLE IF NOT EXISTS skips existing tables.
+
+CREATE TABLE IF NOT EXISTS identities (
+  id         TEXT PRIMARY KEY,
+  handle     TEXT UNIQUE NOT NULL,
+  type       TEXT NOT NULL CHECK (type IN ('user','agent','llm','service')),
+  name       TEXT NOT NULL,
+  config     TEXT NOT NULL DEFAULT '{}',   -- JSON blob
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS scopes (
+  id              TEXT PRIMARY KEY,
+  handle          TEXT UNIQUE NOT NULL,
+  type            TEXT NOT NULL CHECK (type IN ('public','org','team','project','personal')),
+  name            TEXT NOT NULL,
+  parent_scope_id TEXT REFERENCES scopes(id) ON DELETE CASCADE,
+  owner_id        TEXT NOT NULL REFERENCES identities(id),
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS scope_memberships (
+  id          TEXT PRIMARY KEY,
+  scope_id    TEXT NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+  identity_id TEXT NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+  role        TEXT NOT NULL CHECK (role IN ('owner','admin','contributor','viewer')),
+  granted_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(scope_id, identity_id)
+);
+CREATE TABLE IF NOT EXISTS commits (
+  id                 TEXT PRIMARY KEY,
+  author_id          TEXT NOT NULL REFERENCES identities(id),
+  scope_id           TEXT NOT NULL REFERENCES scopes(id),
+  parent_commit_id   TEXT REFERENCES commits(id),
+  message            TEXT NOT NULL,
+  fragments_added    TEXT NOT NULL DEFAULT '[]',    -- JSON array of UUIDs
+  fragments_modified TEXT NOT NULL DEFAULT '[]',
+  fragments_removed  TEXT NOT NULL DEFAULT '[]',
+  metadata           TEXT NOT NULL DEFAULT '{}',
+  created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS fragments (
+  id               TEXT PRIMARY KEY,
+  type             TEXT NOT NULL CHECK (type IN (
+                     'preference','fact','decision','state',
+                     'observation','requirement','procedure','conversation')),
+  content          TEXT NOT NULL,
+  scope_id         TEXT NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+  owner_id         TEXT NOT NULL REFERENCES identities(id),
+  confidence       REAL,
+  version          INTEGER NOT NULL DEFAULT 1,
+  ttl_seconds      INTEGER,
+  expires_at       TEXT,           -- ISO datetime or NULL
+  permanent        INTEGER NOT NULL DEFAULT 0,   -- boolean
+  is_stale         INTEGER NOT NULL DEFAULT 0,
+  stale_reason     TEXT,
+  tags             TEXT NOT NULL DEFAULT '[]',   -- JSON array of strings
+  territory        TEXT,                         -- "backend/auth", "frontend/ui"
+  source_commit_id TEXT REFERENCES commits(id),
+  metadata         TEXT NOT NULL DEFAULT '{}',
+  content_embedding BLOB,                        -- NULL until embedded
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by_tool           TEXT,
+  created_in_session_id     TEXT,
+  created_against_commit    TEXT,
+  files_open_at_creation    TEXT NOT NULL DEFAULT '[]',
+  supersedes_fragment_id    TEXT REFERENCES fragments(id),
+  superseded_by_fragment_id TEXT REFERENCES fragments(id),
+  extraction_method         TEXT NOT NULL DEFAULT 'explicit',
+  extraction_confidence     REAL,
+  value                     REAL NOT NULL DEFAULT 0.5,
+  dedupe_key                TEXT,
+  recall_hits               INTEGER NOT NULL DEFAULT 0,
+  last_recalled_at          TEXT
+);
+CREATE TABLE IF NOT EXISTS leases (
+  id          TEXT PRIMARY KEY,
+  scope_id    TEXT NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+  glob        TEXT NOT NULL,           -- "backend/auth/**"
+  owner_id    TEXT NOT NULL REFERENCES identities(id) ON DELETE CASCADE,
+  reason      TEXT,
+  acquired_at TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at  TEXT NOT NULL,
+  metadata    TEXT NOT NULL DEFAULT '{}'
+);
+CREATE TABLE IF NOT EXISTS chunks (
+  id                TEXT PRIMARY KEY,
+  scope_id          TEXT NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+  source_root       TEXT NOT NULL,
+  source_path       TEXT NOT NULL,
+  language          TEXT,
+  chunk_type        TEXT NOT NULL DEFAULT 'window',  -- window | section | file | symbol
+  symbol_name       TEXT,
+  line_start        INTEGER NOT NULL,
+  line_end          INTEGER NOT NULL,
+  content           TEXT NOT NULL,
+  content_hash      TEXT NOT NULL,
+  content_embedding BLOB,
+  metadata          TEXT NOT NULL DEFAULT '{}',
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS mcp_clients (
+  token_prefix     TEXT PRIMARY KEY,           -- first 16 chars of bearer token (unique enough)
+  client_name      TEXT NOT NULL,              -- canonical lowercase: claude-code, cursor, codex, ...
+  display_name     TEXT,                       -- user-facing label
+  full_token_hash  TEXT,                       -- optional: bcrypt for full verification later
+  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS extraction_candidates (
+  id                  TEXT PRIMARY KEY,
+  scope_id            TEXT NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+  content             TEXT NOT NULL,
+  type                TEXT NOT NULL CHECK (type IN (
+                        'preference','fact','decision','state',
+                        'observation','requirement','procedure','conversation')),
+  territory           TEXT,
+  tags                TEXT NOT NULL DEFAULT '[]',     -- JSON array
+  confidence          REAL NOT NULL,
+  source_tool         TEXT NOT NULL,                  -- code-scanner / transcript-claude / ...
+  source_session_id   TEXT,
+  source_file         TEXT,                           -- when extracted from a file
+  source_message_ts   TEXT,                           -- when extracted from a chat message
+  status              TEXT NOT NULL DEFAULT 'pending',-- pending | approved | rejected
+  reviewed_at         TEXT,
+  promoted_fragment_id TEXT REFERENCES fragments(id), -- non-null after approval
+  created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS transcript_cursors (
+  file_path        TEXT PRIMARY KEY,
+  last_byte_offset INTEGER NOT NULL DEFAULT 0,
+  last_seen_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  client_name      TEXT NOT NULL                  -- claude-code, ...
+);
+CREATE INDEX IF NOT EXISTS idx_commits_scope     ON commits(scope_id);
+CREATE INDEX IF NOT EXISTS idx_commits_created   ON commits(created_at);
+CREATE INDEX IF NOT EXISTS idx_fragments_scope    ON fragments(scope_id);
+CREATE INDEX IF NOT EXISTS idx_fragments_type     ON fragments(type);
+CREATE INDEX IF NOT EXISTS idx_fragments_expires  ON fragments(expires_at) WHERE expires_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_fragments_stale    ON fragments(is_stale);
+CREATE INDEX IF NOT EXISTS idx_fragments_territory ON fragments(territory) WHERE territory IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_leases_scope   ON leases(scope_id);
+CREATE INDEX IF NOT EXISTS idx_leases_expires ON leases(expires_at);
+CREATE INDEX IF NOT EXISTS idx_leases_owner   ON leases(owner_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_scope ON chunks(scope_id);
+CREATE INDEX IF NOT EXISTS idx_chunks_root  ON chunks(scope_id, source_root);
+CREATE INDEX IF NOT EXISTS idx_chunks_path  ON chunks(scope_id, source_root, source_path);
+CREATE INDEX IF NOT EXISTS idx_chunks_hash  ON chunks(content_hash);
+CREATE INDEX IF NOT EXISTS idx_chunks_lang  ON chunks(language);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_chunks_location
+  ON chunks(scope_id, source_root, source_path, line_start, line_end);
+CREATE INDEX IF NOT EXISTS idx_fragments_supersedes ON fragments(supersedes_fragment_id) WHERE supersedes_fragment_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_fragments_superseded_by ON fragments(superseded_by_fragment_id) WHERE superseded_by_fragment_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_fragments_tool     ON fragments(created_by_tool) WHERE created_by_tool IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_fragments_method   ON fragments(extraction_method);
+CREATE INDEX IF NOT EXISTS idx_mcp_clients_name ON mcp_clients(client_name);
+CREATE INDEX IF NOT EXISTS idx_candidates_status ON extraction_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_candidates_scope ON extraction_candidates(scope_id);
+CREATE INDEX IF NOT EXISTS idx_candidates_tool ON extraction_candidates(source_tool);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_candidates_dedup
+  ON extraction_candidates(scope_id, content, source_tool);
+CREATE VIRTUAL TABLE IF NOT EXISTS fragments_fts
+  USING fts5(
+    content,
+    fragment_id UNINDEXED,   -- carry the real PK through for joins
+    tokenize = 'porter ascii'
+  )
+;
+CREATE TRIGGER IF NOT EXISTS fragments_fts_insert
+  AFTER INSERT ON fragments BEGIN
+    INSERT INTO fragments_fts(content, fragment_id) VALUES (new.content, new.id);
+  END;
+CREATE TRIGGER IF NOT EXISTS fragments_fts_delete
+  AFTER DELETE ON fragments BEGIN
+    DELETE FROM fragments_fts WHERE fragment_id = old.id;
+  END;
+CREATE TRIGGER IF NOT EXISTS fragments_fts_update
+  AFTER UPDATE OF content ON fragments BEGIN
+    DELETE FROM fragments_fts WHERE fragment_id = old.id;
+    INSERT INTO fragments_fts(content, fragment_id) VALUES (new.content, new.id);
+  END;
+CREATE TRIGGER IF NOT EXISTS fragments_updated_at
+  AFTER UPDATE ON fragments BEGIN
+    UPDATE fragments SET updated_at = datetime('now') WHERE id = new.id;
+  END;
+CREATE VIRTUAL TABLE IF NOT EXISTS chunks_fts
+  USING fts5(
+    content,
+    chunk_id UNINDEXED,
+    tokenize = 'porter ascii'
+  )
+;
+CREATE TRIGGER IF NOT EXISTS chunks_fts_insert
+        AFTER INSERT ON chunks BEGIN
+          INSERT INTO chunks_fts(content, chunk_id) VALUES (new.content, new.id);
+        END;
+CREATE TRIGGER IF NOT EXISTS chunks_fts_delete
+        AFTER DELETE ON chunks BEGIN
+          DELETE FROM chunks_fts WHERE chunk_id = old.id;
+        END;
+CREATE TRIGGER IF NOT EXISTS chunks_fts_update
+        AFTER UPDATE OF content ON chunks BEGIN
+          DELETE FROM chunks_fts WHERE chunk_id = old.id;
+          INSERT INTO chunks_fts(content, chunk_id) VALUES (new.content, new.id);
+        END;
+CREATE INDEX IF NOT EXISTS idx_fragments_value    ON fragments(value);
+CREATE TABLE IF NOT EXISTS agents_md_state (
+  scope_handle      TEXT NOT NULL,
+  file_path         TEXT NOT NULL,
+  last_render_hash  TEXT NOT NULL,
+  last_render_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (scope_handle, file_path)
+);
+CREATE INDEX IF NOT EXISTS idx_fragments_dedupe   ON fragments(dedupe_key) WHERE dedupe_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_fragments_recalled ON fragments(last_recalled_at) WHERE last_recalled_at IS NOT NULL;
+CREATE TABLE IF NOT EXISTS recall_events (
+  recall_id    TEXT PRIMARY KEY,
+  query        TEXT NOT NULL,
+  scope_handle TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_recall_events_created ON recall_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_recall_events_scope ON recall_events(scope_handle);
+CREATE TABLE IF NOT EXISTS recall_links (
+  recall_id   TEXT NOT NULL,
+  fragment_id TEXT NOT NULL,
+  linked_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (recall_id, fragment_id),
+  FOREIGN KEY (recall_id) REFERENCES recall_events(recall_id) ON DELETE CASCADE,
+  FOREIGN KEY (fragment_id) REFERENCES fragments(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_recall_links_recall ON recall_links(recall_id);
+CREATE INDEX IF NOT EXISTS idx_recall_links_fragment ON recall_links(fragment_id);
+CREATE TABLE IF NOT EXISTS entities (
+  id            TEXT PRIMARY KEY,
+  scope_id      TEXT NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+  domain        TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  aliases_json  TEXT NOT NULL DEFAULT '[]',
+  specs_json    TEXT NOT NULL DEFAULT '{}',
+  file_targets  TEXT NOT NULL DEFAULT '[]',
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_entities_domain ON entities(domain);
