@@ -21,6 +21,8 @@ pub fn snapshot(conn: &Connection, dir: &Path, label: &str) -> Result<PathBuf> {
         .unwrap_or_default()
         .as_secs();
     let path = dir.join(format!("{SNAPSHOT_PREFIX}{label}-{secs}"));
+    // Create the file owner-only before any data is written into it.
+    create_private(&path)?;
     let mut dst = Connection::open(&path)?;
     Backup::new(conn, &mut dst)?.run_to_completion(256, Duration::ZERO, None)?;
     Ok(path)
@@ -45,9 +47,37 @@ pub fn rotate(dir: &Path, keep: usize) -> Result<Vec<PathBuf>> {
     Ok(removed)
 }
 
-/// `PRAGMA integrity_check`. Empty means healthy.
+#[cfg(unix)]
+fn create_private(path: &Path) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)?;
+    super::restrict(path, 0o600)
+}
+
+#[cfg(not(unix))]
+fn create_private(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+/// `PRAGMA integrity_check`: thorough, reads every page and index. Empty
+/// means healthy.
 pub fn integrity_check(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+    check(conn, "integrity_check")
+}
+
+/// `PRAGMA quick_check`: skips index-vs-table cross checks, so it is fast
+/// enough to run on every daemon start. Empty means healthy.
+pub fn quick_check(conn: &Connection) -> Result<Vec<String>> {
+    check(conn, "quick_check")
+}
+
+fn check(conn: &Connection, pragma: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(&format!("PRAGMA {pragma}"))?;
     let rows: Vec<String> = stmt
         .query_map([], |r| r.get(0))?
         .collect::<rusqlite::Result<_>>()?;

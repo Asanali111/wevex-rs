@@ -18,7 +18,7 @@ use rusqlite::{Connection, OpenFlags};
 pub use migrations::MigrationReport;
 use pool::{Readers, Writer};
 
-use crate::Result;
+use crate::{Error, Result};
 
 /// Reader connections in the pool. Recall is the hot path; four covers
 /// several agents querying at once on any machine we target.
@@ -46,12 +46,31 @@ impl Store {
     }
 
     pub fn open_with(path: &Path, readers: usize) -> Result<Self> {
-        if let Some(parent) = path.parent() {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             std::fs::create_dir_all(parent)?;
+            restrict(parent, 0o700)?;
         }
         let mut conn = Connection::open(path)?;
+        restrict(path, 0o600)?;
+        // Side files left by an earlier run keep the mode they were made with.
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.as_os_str().to_owned();
+            side.push(suffix);
+            let side = PathBuf::from(side);
+            if side.exists() {
+                restrict(&side, 0o600)?;
+            }
+        }
         configure(&conn)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
+
+        // Never snapshot, migrate or serve a damaged file. `quick_check` is
+        // the fast subset of `integrity_check` (no index cross-checks);
+        // `wevex doctor` runs the full one.
+        let problems = backup::quick_check(&conn)?;
+        if !problems.is_empty() {
+            return Err(Error::Corrupt(problems));
+        }
 
         let mut report = OpenReport::default();
         if migrations::user_version(&conn)? < migrations::LATEST && migrations::has_tables(&conn)? {
@@ -114,11 +133,24 @@ fn configure(conn: &Connection) -> Result<()> {
 fn open_reader(path: &Path) -> Result<Connection> {
     let conn = Connection::open_with_flags(
         path,
-        OpenFlags::SQLITE_OPEN_READ_ONLY
-            | OpenFlags::SQLITE_OPEN_NO_MUTEX
-            | OpenFlags::SQLITE_OPEN_URI,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     configure(&conn)?;
     conn.pragma_update(None, "query_only", "ON")?;
     Ok(conn)
+}
+
+/// Owner-only permissions on Unix: the database holds the user's notes.
+/// SQLite creates `-wal` / `-shm` with the main file's mode. On Windows,
+/// `%APPDATA%` is already private to the user by its default ACL.
+#[cfg(unix)]
+pub(crate) fn restrict(path: &Path, mode: u32) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+pub(crate) fn restrict(_path: &Path, _mode: u32) -> Result<()> {
+    Ok(())
 }

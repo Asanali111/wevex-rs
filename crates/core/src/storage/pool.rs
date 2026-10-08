@@ -6,9 +6,10 @@
 //! in order and never hit `SQLITE_BUSY`. Reads take a `query_only`
 //! connection from a small pool and never wait on writes.
 
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Condvar, Mutex};
-use std::thread::JoinHandle;
+use std::thread::{JoinHandle, ThreadId};
 
 use rusqlite::Connection;
 
@@ -19,6 +20,7 @@ type Job = Box<dyn FnOnce(&mut Connection) + Send>;
 pub struct Writer {
     tx: Option<Sender<Job>>,
     handle: Option<JoinHandle<()>>,
+    thread: ThreadId,
 }
 
 impl Writer {
@@ -28,21 +30,36 @@ impl Writer {
             .name("wevex-db-writer".into())
             .spawn(move || {
                 for job in rx {
-                    job(&mut conn);
+                    // A panicking job must not take the thread down with it:
+                    // every later write would fail while the daemon looked
+                    // healthy. The job's caller gets `WritePanicked` instead.
+                    if catch_unwind(AssertUnwindSafe(|| job(&mut conn))).is_err()
+                        && !conn.is_autocommit()
+                    {
+                        // A transaction left open by the panic is undone.
+                        let _ = conn.execute_batch("ROLLBACK");
+                    }
                 }
             })?;
         Ok(Self {
+            thread: handle.thread().id(),
             tx: Some(tx),
             handle: Some(handle),
         })
     }
 
     /// Run `f` on the writer thread and wait for its result.
+    ///
+    /// Must not be called from inside another write: the writer would wait
+    /// on itself. That case returns [`Error::ReentrantWrite`] instead.
     pub fn run<T, F>(&self, f: F) -> Result<T>
     where
         T: Send + 'static,
         F: FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     {
+        if std::thread::current().id() == self.thread {
+            return Err(Error::ReentrantWrite);
+        }
         let (rtx, rrx) = mpsc::sync_channel(1);
         let job: Job = Box::new(move |conn| {
             let _ = rtx.send(f(conn));
@@ -52,7 +69,8 @@ impl Writer {
             .ok_or(Error::WriterGone)?
             .send(job)
             .map_err(|_| Error::WriterGone)?;
-        rrx.recv().map_err(|_| Error::WriterGone)?
+        // The reply sender is dropped without sending only if `f` panicked.
+        rrx.recv().map_err(|_| Error::WritePanicked)?
     }
 }
 
@@ -79,7 +97,9 @@ impl Readers {
         }
     }
 
-    /// Borrow a read-only connection for the duration of `f`.
+    /// Borrow a read-only connection for the duration of `f`. Do not nest
+    /// reads inside `f`: with every connection leased, the inner call would
+    /// wait forever.
     pub fn run<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
         let lease = self.checkout();
         f(lease.conn())

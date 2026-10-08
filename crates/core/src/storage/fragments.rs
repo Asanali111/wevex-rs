@@ -78,11 +78,13 @@ pub fn get(conn: &Connection, id: &str) -> Result<Option<Fragment>> {
         .optional()?)
 }
 
-/// Most recently updated live fragments.
+/// Most recently updated live fragments. Sorted by `julianday()` because
+/// rows mix `YYYY-MM-DD HH:MM:SS` and ISO-8601 `T` timestamps, which sort
+/// wrongly against each other as text within the same day.
 pub fn recent(conn: &Connection, limit: usize) -> Result<Vec<Fragment>> {
     let mut stmt = conn.prepare(&format!(
         "SELECT {COLUMNS} FROM fragments WHERE {LIVE}
-         ORDER BY updated_at DESC LIMIT ?1"
+         ORDER BY julianday(updated_at) DESC LIMIT ?1"
     ))?;
     let rows = stmt
         .query_map([limit as i64], Fragment::from_row)?

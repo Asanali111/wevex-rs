@@ -24,6 +24,15 @@ pub enum Error {
     #[error("storage writer thread is gone")]
     WriterGone,
 
+    #[error("a database write panicked and was rolled back")]
+    WritePanicked,
+
+    #[error("Store::write called from inside another write")]
+    ReentrantWrite,
+
+    #[error("database failed its integrity check: {}", .0.join("; "))]
+    Corrupt(Vec<String>),
+
     #[error("could not determine the home directory")]
     NoHome,
 }
