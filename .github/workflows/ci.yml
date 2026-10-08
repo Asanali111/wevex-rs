@@ -51,6 +51,36 @@ jobs:
           ./target/${{ matrix.target }}/release/wevex --version
           ./target/${{ matrix.target }}/release/wevexd --version
 
+  # Real-model tests: download bge-small (~134 MB, cached) and check that
+  # embeddings work and rank by meaning on every platform.
+  model:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: aarch64-apple-darwin
+          - os: macos-14
+            target: x86_64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    env:
+      WEVEX_MODEL_CACHE: ${{ github.workspace }}/.models
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: actions/cache@v4
+        with:
+          path: .models
+          key: bge-small-en-v1.5-5c38ec7
+      - run: cargo test -p wevex-embed --target ${{ matrix.target }} -- --ignored --nocapture
+
   universal:
     needs: test
     runs-on: macos-14

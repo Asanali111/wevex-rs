@@ -15,11 +15,18 @@ pub struct Migration {
     pub sql: &'static str,
 }
 
-pub const MIGRATIONS: &[Migration] = &[Migration {
-    version: 1,
-    name: "baseline",
-    sql: include_str!("../../migrations/0001_baseline.sql"),
-}];
+pub const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        name: "baseline",
+        sql: include_str!("../../migrations/0001_baseline.sql"),
+    },
+    Migration {
+        version: 2,
+        name: "fragment_vectors",
+        sql: include_str!("../../migrations/0002_fragment_vectors.sql"),
+    },
+];
 
 pub const LATEST: i64 = MIGRATIONS[MIGRATIONS.len() - 1].version;
 
@@ -270,6 +277,44 @@ mod tests {
             )
             .unwrap();
         assert_ne!(updated_at, "2026-01-01 00:00:00");
+    }
+
+    #[test]
+    fn bookkeeping_updates_do_not_bump_updated_at_but_edits_do() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             INSERT INTO identities (id, handle, type, name) VALUES ('u', 'me', 'user', 'Me');
+             INSERT INTO scopes (id, handle, type, name, owner_id) VALUES ('s', 'p', 'project', 'P', 'u');
+             INSERT INTO fragments (id, type, content, scope_id, owner_id, updated_at)
+               VALUES ('f', 'fact', 'x', 's', 'u', '2026-01-01 00:00:00');
+             UPDATE fragments SET recall_hits = recall_hits + 1,
+                                  last_recalled_at = datetime('now'), value = 0.9;",
+        )
+        .unwrap();
+        let updated = |c: &Connection| -> String {
+            c.query_row("SELECT updated_at FROM fragments", [], |r| r.get(0))
+                .unwrap()
+        };
+        assert_eq!(updated(&conn), "2026-01-01 00:00:00");
+
+        conn.execute("UPDATE fragments SET content = 'y'", [])
+            .unwrap();
+        assert_ne!(updated(&conn), "2026-01-01 00:00:00");
+
+        // Vectors go with their fragment.
+        conn.execute(
+            "INSERT INTO fragment_vectors (fragment_id, model, content_hash, vector)
+             VALUES ('f', 'm', 'h', x'00')",
+            [],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM fragments", []).unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM fragment_vectors", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(left, 0);
     }
 
     #[test]
