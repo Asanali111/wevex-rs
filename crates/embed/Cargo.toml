@@ -1,6 +1,6 @@
 [package]
 name = "wevex-embed"
-description = "Local text embeddings (ONNX Runtime)."
+description = "Local text embeddings (bge-small via candle, pure Rust)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,3 +9,18 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+candle-core.workspace = true
+candle-nn.workspace = true
+candle-transformers.workspace = true
+tokenizers.workspace = true
+ureq.workspace = true
+sha2.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+# Apple's Accelerate (BLAS) for matrix maths on both Apple Silicon and Intel Macs.
+[target.'cfg(target_os = "macos")'.dependencies]
+candle-core = { workspace = true, features = ["accelerate"] }
+
+[dev-dependencies]
+tempfile.workspace = true

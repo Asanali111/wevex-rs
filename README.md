@@ -16,7 +16,7 @@ This is the Rust rewrite that replaces the Python ([wevex](https://github.com/As
 
 ```
 crates/core      storage, migrations, scopes, entities, hybrid recall
-crates/embed     local embeddings (ONNX Runtime)
+crates/embed     local embeddings (bge-small via candle)
 crates/mcp       MCP server, 127.0.0.1:8765/mcp
 crates/watchers  file, git and transcript watchers
 crates/service   launchd (macOS) / Scheduled Task (Windows)
