@@ -37,6 +37,7 @@ environment with `fastembed` (the onnx-quantized bge-small).
 | 300 + pre | 293 | 0% | 0.403 | 0.423 | 0.224 | 0.483 | 0.602 | 0.362 | 870 |
 | **400 + pre** | 379 | 0% | 0.453 | 0.498 | 0.323 | 0.517 | 0.637 | 0.439 | **1129** |
 | **500 + pre** | 462 | 15% | 0.493 | 0.502 | **0.353** | **0.542** | **0.667** | **0.463** | 1386 |
+| 800 + pre | 698 | 87% | 0.527 | 0.468 | 0.308 | **0.542** | 0.657 | 0.440 | 2136 |
 
 The size label is the budget for the body. The preamble comes on top of it.
 
@@ -59,7 +60,10 @@ The size label is the budget for the body. The preamble comes on top of it.
      chunks spill past 512.
    - 400 + pre trails it by 1–3 points (2–6 of 201 queries, within noise) and
      fits under the cap with headroom.
-5. **Small chunks are the most token-efficient but miss more.** 150 + pre gets
+5. **Going past 512 buys nothing.** 800 + pre ties 500 + pre on r@3 (0.542)
+   but is lower on r@1, r@5 and MRR, and returns about 54% more tokens. Most
+   of each chunk is truncated before embedding.
+6. **Small chunks are the most token-efficient but miss more.** 150 + pre gets
    0.433 r@3 on about 470 tokens, which is good for a tight budget, but r@1
    and MRR are weak.
 
