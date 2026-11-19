@@ -4,6 +4,7 @@ pub mod embedding;
 pub mod error;
 pub mod lock;
 pub mod paths;
+pub mod recall;
 pub mod storage;
 pub mod value;
 

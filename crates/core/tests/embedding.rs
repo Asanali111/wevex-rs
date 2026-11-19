@@ -173,3 +173,81 @@ fn long_fragments_are_embedded_as_parts_and_found_by_any_part() {
         .unwrap();
     assert_eq!(n, 1);
 }
+
+mod recall {
+    use super::*;
+    use wevex_core::recall::recall;
+
+    #[test]
+    fn hybrid_recall_finds_by_keyword_and_meaning_within_scope() {
+        let (_dir, store) = store_with(&[
+            (
+                "db",
+                "s1",
+                "restored the sqlite database from a backup after corruption",
+                false,
+            ),
+            ("essay", "s1", "college essay about my roommate", false),
+            (
+                "other",
+                "s2",
+                "sqlite backup script for another project",
+                false,
+            ),
+            ("gone", "s1", "sqlite database backup stale note", true),
+            ("fresh", "s1", "kubernetes ingress notes", false),
+        ]);
+        // Wide enough that hash collisions don't fake similarity.
+        let e = HashEmbedder::new(1024);
+        embed_pending(&store, &e).unwrap();
+        // "fresh" lost its vector: only keyword can find it.
+        store
+            .write(|c| {
+                c.execute(
+                    "DELETE FROM fragment_vectors WHERE fragment_id = 'fresh'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .unwrap();
+        let ix = store
+            .read(|c| VectorIndex::load(c, &model_key(&e), 1024))
+            .unwrap();
+        assert_eq!(ix.len(), 3);
+
+        let hits = store
+            .read(|c| recall(c, &e, &ix, "sqlite backup", None, 10, 0.1))
+            .unwrap();
+        let found: Vec<&str> = hits.iter().map(|h| h.id.as_str()).collect();
+        assert!(
+            found.contains(&"db") && found.contains(&"other"),
+            "{found:?}"
+        );
+        assert!(!found.contains(&"gone"), "stale never returned");
+        let db = hits.iter().find(|h| h.id == "db").unwrap();
+        assert!(db.by_keyword && db.by_meaning);
+
+        let s1: HashSet<String> = ["s1".to_string()].into();
+        let hits = store
+            .read(|c| recall(c, &e, &ix, "sqlite backup", Some(&s1), 10, 0.1))
+            .unwrap();
+        assert!(
+            hits.iter().all(|h| h.id != "other"),
+            "scope respected by both legs"
+        );
+        assert_eq!(hits[0].id, "db");
+
+        let hits = store
+            .read(|c| recall(c, &e, &ix, "kubernetes", None, 3, 0.1))
+            .unwrap();
+        assert_eq!(hits[0].id, "fresh");
+        assert!(hits[0].by_keyword && !hits[0].by_meaning);
+
+        assert!(
+            store
+                .read(|c| recall(c, &e, &ix, "   ", None, 3, 0.1))
+                .unwrap()
+                .is_empty()
+        );
+    }
+}
