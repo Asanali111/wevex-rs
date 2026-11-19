@@ -1,18 +1,22 @@
 -- 0002: embeddings move out of fragments.content_embedding into their own
 -- table, keyed by the model that produced them.
 --
--- `model` is the embedder id (model + pinned weights). A vector whose model
+-- `model` is the embedder id (model + pinned weights) plus the text format. A vector whose model
 -- or content_hash no longer matches is re-embedded, so vectors from
 -- different models are never compared. The legacy content_embedding column
 -- is left untouched for Python v0.2.2 running side by side; the Rust core
 -- never reads it.
 
 CREATE TABLE IF NOT EXISTS fragment_vectors (
-  fragment_id  TEXT PRIMARY KEY REFERENCES fragments(id) ON DELETE CASCADE,
-  model        TEXT NOT NULL,
-  content_hash TEXT NOT NULL,   -- sha256 of the embedded text, hex
+  fragment_id  TEXT NOT NULL REFERENCES fragments(id) ON DELETE CASCADE,
+  -- The model reads at most ~510 tokens; longer fragments are embedded as
+  -- several overlapping parts and score as their best part.
+  part         INTEGER NOT NULL DEFAULT 0,
+  model        TEXT NOT NULL,   -- embedder id + text format, e.g. bge...@5c38ec7/h1
+  content_hash TEXT NOT NULL,   -- sha256 of the full text that was embedded, hex
   vector       BLOB NOT NULL,   -- f32 little-endian, unit length
-  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (fragment_id, part)
 );
 CREATE INDEX IF NOT EXISTS idx_fragment_vectors_model ON fragment_vectors(model);
 

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use rusqlite::{Connection, OpenFlags};
-use wevex_core::embedding::{VectorIndex, embed_pending};
+use wevex_core::embedding::{VectorIndex, embed_pending, model_key};
 use wevex_core::storage::{Store, backup};
 use wevex_embed::{BgeSmall, Embedder};
 
@@ -42,7 +42,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         took.as_secs_f64() * 1000.0 / n.max(1) as f64
     );
 
-    let index = store.read(|c| VectorIndex::load(c, model.id(), model.dim()))?;
+    let index = store.read(|c| VectorIndex::load(c, &model_key(&model), model.dim()))?;
     for q in &queries {
         let t = Instant::now();
         let qv = model.embed(&[q])?.remove(0);
