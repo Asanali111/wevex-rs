@@ -43,13 +43,17 @@ const FILES: &[download::ModelFile] = &[
 pub struct BgeSmall {
     model: BertModel,
     tokenizer: Tokenizer,
+    /// Same vocabulary, no truncation or padding: for measuring and
+    /// splitting text, where truncation would hide what gets cut off.
+    counter: Tokenizer,
     device: Device,
 }
 
 impl BgeSmall {
     pub const ID: &'static str = "bge-small-en-v1.5@5c38ec7";
     pub const DIM: usize = 384;
-    /// Longest input in tokens; longer text is truncated.
+    /// Longest input in tokens, [CLS] and [SEP] included; longer input is
+    /// truncated.
     const MAX_TOKENS: usize = 512;
 
     /// Load from `models_dir/bge-small-en-v1.5`, downloading (~134 MB) and
@@ -64,6 +68,11 @@ impl BgeSmall {
 
         let mut tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))
             .map_err(|e| Error::Model(format!("tokenizer.json: {e}")))?;
+        let mut counter = tokenizer.clone();
+        counter.with_padding(None);
+        counter
+            .with_truncation(None)
+            .map_err(|e| Error::Model(format!("tokenizer: {e}")))?;
         tokenizer.with_padding(Some(PaddingParams::default()));
         tokenizer
             .with_truncation(Some(TruncationParams {
@@ -86,6 +95,7 @@ impl BgeSmall {
         Ok(Self {
             model,
             tokenizer,
+            counter,
             device,
         })
     }
@@ -131,6 +141,22 @@ impl Embedder for BgeSmall {
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         self.embed_batch(texts)
     }
+
+    fn max_tokens(&self) -> usize {
+        Self::MAX_TOKENS - 2 // [CLS] and [SEP]
+    }
+
+    fn token_starts(&self, text: &str) -> Result<Vec<usize>> {
+        let enc = self
+            .counter
+            .encode(text, false)
+            .map_err(|e| Error::Model(format!("tokenize: {e}")))?;
+        // Byte offsets; a word split into word-pieces yields one entry per
+        // piece, and only distinct starts matter for splitting.
+        let mut starts: Vec<usize> = enc.get_offsets().iter().map(|&(s, _)| s).collect();
+        starts.dedup();
+        Ok(starts)
+    }
 }
 
 #[cfg(test)]
@@ -162,6 +188,20 @@ mod tests {
         let unrelated = dot(&v[0], &v[2]);
         eprintln!("uni list ~ target schools {related:.3}, ~ borrow checker {unrelated:.3}");
         assert!(related > unrelated);
+    }
+
+    #[test]
+    #[ignore]
+    fn token_starts_count_real_tokens() {
+        let m = BgeSmall::load(&models_dir()).unwrap();
+        let starts = m
+            .token_starts("Tokenization splits unbelievably long words")
+            .unwrap();
+        // More word-pieces than words, all at valid char boundaries.
+        assert!(starts.len() > 5);
+        let text = "Tokenization splits unbelievably long words";
+        assert!(starts.iter().all(|&s| text.is_char_boundary(s)));
+        assert_eq!(m.max_tokens(), 510);
     }
 
     /// Padding a short text to a longer batch must not change its vector.

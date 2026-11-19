@@ -9,13 +9,23 @@ use crate::{Embedder, Result, normalize};
 
 pub struct HashEmbedder {
     dim: usize,
+    max_tokens: usize,
 }
 
 impl HashEmbedder {
     pub const ID: &'static str = "test-hash";
 
     pub fn new(dim: usize) -> Self {
-        Self { dim }
+        Self {
+            dim,
+            max_tokens: usize::MAX,
+        }
+    }
+
+    /// Pretend the model can only read `n` words, to exercise splitting.
+    pub fn with_max_tokens(mut self, n: usize) -> Self {
+        self.max_tokens = n;
+        self
     }
 }
 
@@ -26,6 +36,10 @@ impl Embedder for HashEmbedder {
 
     fn dim(&self) -> usize {
         self.dim
+    }
+
+    fn max_tokens(&self) -> usize {
+        self.max_tokens
     }
 
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {

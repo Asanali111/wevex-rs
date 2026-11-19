@@ -16,6 +16,7 @@ type Loader = Box<dyn Fn() -> Result<Box<dyn Embedder>> + Send + Sync>;
 pub struct Managed {
     id: String,
     dim: usize,
+    max_tokens: usize,
     loader: Loader,
     state: Mutex<State>,
     cache: Mutex<QueryCache>,
@@ -27,17 +28,20 @@ struct State {
 }
 
 impl Managed {
-    /// `id` and `dim` must be what `loader`'s model reports; they are needed
-    /// before the model is ever loaded (to decide what needs re-embedding).
+    /// `id`, `dim` and `max_tokens` must be what `loader`'s model reports;
+    /// they are needed before the model is ever loaded (to decide what needs
+    /// re-embedding).
     pub fn new(
         id: impl Into<String>,
         dim: usize,
+        max_tokens: usize,
         cache_size: usize,
         loader: impl Fn() -> Result<Box<dyn Embedder>> + Send + Sync + 'static,
     ) -> Self {
         Self {
             id: id.into(),
             dim,
+            max_tokens,
             loader: Box::new(loader),
             state: Mutex::new(State {
                 model: None,
@@ -72,6 +76,15 @@ impl Managed {
         false
     }
 
+    fn with_model<T>(&self, f: impl FnOnce(&dyn Embedder) -> Result<T>) -> Result<T> {
+        let mut state = self.lock_state();
+        if state.model.is_none() {
+            state.model = Some((self.loader)()?);
+        }
+        state.last_used = Instant::now();
+        f(state.model.as_deref().expect("loaded above"))
+    }
+
     fn lock_state(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -91,12 +104,15 @@ impl Embedder for Managed {
     }
 
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        let mut state = self.lock_state();
-        if state.model.is_none() {
-            state.model = Some((self.loader)()?);
-        }
-        state.last_used = Instant::now();
-        state.model.as_ref().expect("loaded above").embed(texts)
+        self.with_model(|m| m.embed(texts))
+    }
+
+    fn max_tokens(&self) -> usize {
+        self.max_tokens
+    }
+
+    fn token_starts(&self, text: &str) -> Result<Vec<usize>> {
+        self.with_model(|m| m.token_starts(text))
     }
 }
 
@@ -143,7 +159,7 @@ mod tests {
     use crate::HashEmbedder;
 
     fn counting(loads: Arc<AtomicUsize>) -> Managed {
-        Managed::new(HashEmbedder::ID, 32, 2, move || {
+        Managed::new(HashEmbedder::ID, 32, usize::MAX, 2, move || {
             loads.fetch_add(1, Ordering::SeqCst);
             Ok(Box::new(HashEmbedder::new(32)) as Box<dyn Embedder>)
         })

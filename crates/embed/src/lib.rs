@@ -38,6 +38,35 @@ pub trait Embedder: Send + Sync {
     fn dim(&self) -> usize;
     /// One unit-length vector of [`Embedder::dim`] values per text, in order.
     fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>>;
+
+    /// Most tokens of text one input can hold, special tokens excluded.
+    /// Anything longer is silently truncated by the model, so callers split
+    /// long text first (see `wevex_core::embedding`).
+    fn max_tokens(&self) -> usize {
+        usize::MAX
+    }
+
+    /// Byte offset at which each token of `text` starts, special tokens
+    /// excluded. The default treats each whitespace-separated word as one
+    /// token.
+    fn token_starts(&self, text: &str) -> Result<Vec<usize>> {
+        Ok(word_starts(text))
+    }
+}
+
+/// Byte offset of each whitespace-separated word.
+pub fn word_starts(text: &str) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut in_word = false;
+    for (i, c) in text.char_indices() {
+        if c.is_whitespace() {
+            in_word = false;
+        } else if !in_word {
+            starts.push(i);
+            in_word = true;
+        }
+    }
+    starts
 }
 
 /// Dot product. For unit-length vectors this is the cosine similarity.
@@ -50,5 +79,19 @@ pub fn normalize(v: &mut [f32]) {
     let norm = dot(v, v).sqrt();
     if norm > 0.0 {
         v.iter_mut().for_each(|x| *x /= norm);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_starts_handles_unicode_and_runs_of_space() {
+        let t = "  héllo  wörld\nok";
+        let s = word_starts(t);
+        assert_eq!(s.len(), 3);
+        assert_eq!(&t[s[0]..s[0] + 6], "héllo");
+        assert_eq!(&t[s[2]..], "ok");
     }
 }
