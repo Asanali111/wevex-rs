@@ -45,3 +45,15 @@ behaviour Rust has to match, and is updated whenever the Swift bridge changes.
   `log_conversation` MCP tool, which saves it in the Obsidian vault (found via
   Obsidian's `obsidian.json`) and indexes it. Design: vault note
   `20 Projects/Wevex/01_Vision.md`.
+
+## Decided, not in Swift yet
+
+- **Memory files (2026-11-20).** Memory chosen on purpose (decisions,
+  preferences, `remember` facts, `/wlog` logs) lives as markdown files, one
+  fact per file, in `user/`, `feedback/`, `projects/<name>/`, `reference/`
+  with generated `INDEX.md` files and a root `MEMORY.md`. The files are the
+  truth; the database indexes them. Automatic capture (session digests,
+  commits) stays database-only. Location is the `memory_dir` setting;
+  default `<Obsidian vault>/Wevex/Memory/` (vault from `obsidian.json`),
+  fallback `~/wevex-memory`. Swift draft: `Sources/WevexCore/Memory/MemoryFiles.swift`
+  (uncommitted, does not compile).
